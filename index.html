@@ -13,20 +13,24 @@
         .btn-mode { width: 48%; background: #e0e0e0; }
         .btn-mode.active { background: #002147; color: white; transform: scale(1.02); }
         .btn-action { width: 85%; background: #007bff; color: white; }
-        .btn-manual { background: #4CAF50; color: white; width: 85%; }
-        .btn-enroll { background: #ffc107; color: #000; width: 85%; }
+        .btn-sync { background: #28a745; color: white; width: 85%; }
         input, select { padding: 12px; width: 85%; margin: 10px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 1em; }
-        #video-container { display: none; width: 100%; max-width: 400px; margin: 10px auto; border: 2px solid #002147; border-radius: 10px; overflow: hidden; }
-        video { width: 100%; display: block; }
         #status { font-weight: bold; padding: 10px; border-radius: 5px; background: #fff; display: inline-block; margin-top: 10px; }
-        .enrollment-box { border-top: 5px solid #ffc107; display: none; }
+        .enroll-box { border-top: 5px solid #ffc107; display: none; }
+        #searchBar { border: 2px solid #ffc107; }
     </style>
-    <link rel="manifest" href="manifest.json">
 </head>
 <body>
 
     <h2>🏛️ SSU Tracker Pro</h2>
     
+    <div class="card" style="border-top: 5px solid #28a745;">
+        <button class="btn-sync" onclick="syncOfflineData()">
+            🔄 Sync Data (<span id="offlineCount">0</span>)
+        </button>
+        <div id="status">Tap anywhere to start NFC</div>
+    </div>
+
     <div class="card">
         <div class="mode-container">
             <button id="btnAttendance" class="btn-mode active" onclick="setMode('Attendance')">Attendance</button>
@@ -34,147 +38,156 @@
         </div>
         <div style="margin-top: 15px;">
             <input type="checkbox" id="enrollToggle" onclick="toggleEnrollmentUI()"> 
-            <label for="enrollToggle"><b>Enable Enrollment Mode</b> (Map NFC)</label>
+            <label for="enrollToggle"><b>Enrollment Mode</b> (Map NFC)</label>
         </div>
     </div>
 
-    <div class="card enrollment-box" id="enrollmentUI">
+    <div class="card enroll-box" id="enrollmentUI">
         <h3>Assign NFC to Student</h3>
-        <select id="studentSelector">
-            <option value="">-- Select Student to Map --</option>
-            <optgroup label="BSCS 3-1">
-                <option value="Abion, Von Eiron D">Abion, Von Eiron D</option>
-                <option value="Azares, Junel E">Azares, Junel E</option>
-                <option value="Bulawan, Leonel C">Bulawan, Leonel C</option>
-                <option value="Casinto, Rechelle V">Casinto, Rechelle V</option>
-                <option value="Conda, Homer E">Conda, Homer E</option>
-                <option value="De Guzman, Sandra O">De Guzman, Sandra O</option>
-                <option value="De La Vega, Rexon S">De La Vega, Rexon S</option>
-                <option value="Desouza, Ralph M">Desouza, Ralph M</option>
-                <option value="Dominguez, Kim A">Dominguez, Kim A</option>
-                <option value="Estrabela, Edison D">Estrabela, Edison D</option>
-                <option value="Felonia, Lorenz C">Felonia, Lorenz C</option>
-                <option value="Flores, Robylyn U">Flores, Robylyn U</option>
-                <option value="Furio, Rollin M">Furio, Rollin M</option>
-                <option value="Gallano, John Mitch Carlo G">Gallano, John Mitch Carlo G</option>
-            </optgroup>
+        <input type="text" id="searchBar" placeholder="🔍 Search student name..." onkeyup="filterStudents()">
+        <select id="studentSelector" size="5" style="height: 150px;">
+            <option value="">-- Start searching or refresh --</option>
         </select>
-        <p><small>Once selected, tap NFC to map.</small></p>
+        <button onclick="fetchStudentList()" style="background:#6c757d; color:white; width:85%; margin-top:10px;">🔄 Refresh List</button>
     </div>
 
     <div class="card">
         <input type="text" id="manualId" placeholder="Manual Student ID / Name">
-        <button class="btn-manual" onclick="submitManual()">Log Entry Manually</button>
-        <hr style="margin: 20px; border: 0; border-top: 1px solid #eee;">
-        <button class="btn-action" onclick="startBarcodeScan()">📷 Scan Barcode/QR</button>
-        <div id="video-container">
-            <video id="video" autoplay></video>
-        </div>
+        <button class="btn-action" style="background:#4CAF50;" onclick="submitManual()">Log Entry</button>
     </div>
 
-    <div id="status">Ready. Click anywhere to start NFC.</div>
-
     <script>
+        const scriptURL = "https://script.google.com/macros/s/AKfycbx5sZG0zIJhkB8P6LjKolCrwXXuDzfsrYWU8enK4Ln_cZS9UwcBX__PHLixbYCjnoKJ/exec";
         let currentMode = "Attendance";
         let isEnrolling = false;
-        const scriptURL = "https://script.google.com/macros/s/AKfycbx5sZG0zIJhkB8P6LjKolCrwXXuDzfsrYWU8enK4Ln_cZS9UwcBX__PHLixbYCjnoKJ/exec";
+        let allUnenrolledStudents = [];
 
-        // Audio confirmation
-        function playBeep(freq = 880, duration = 150) {
-            try {
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const oscillator = audioCtx.createOscillator();
-                const gainNode = audioCtx.createGain();
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
-                oscillator.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-                oscillator.start();
-                oscillator.stop(audioCtx.currentTime + (duration / 1000));
-            } catch(e) { console.log("Audio muted"); }
-        }
+        // 1. DATABASE (IndexedDB)
+        const dbReq = indexedDB.open("SSU_Tracker_DB", 1);
+        let db;
+        dbReq.onupgradeneeded = e => { e.target.result.createObjectStore("outbox", { autoIncrement: true }); };
+        dbReq.onsuccess = e => { db = e.target.result; updateOfflineCount(); };
 
         function setMode(mode) {
             currentMode = mode;
-            document.getElementById('btnAttendance').classList.toggle('active', mode === 'Attendance');
-            document.getElementById('btnRecitation').classList.toggle('active', mode === 'Recitation');
-            document.getElementById('status').innerText = "Mode: " + mode;
+            document.getElementById('btnAttendance').className = (mode === 'Attendance' ? 'btn-mode active' : 'btn-mode');
+            document.getElementById('btnRecitation').className = (mode === 'Recitation' ? 'btn-mode active' : 'btn-mode');
             playBeep(440, 50);
         }
 
         function toggleEnrollmentUI() {
             isEnrolling = document.getElementById('enrollToggle').checked;
             document.getElementById('enrollmentUI').style.display = isEnrolling ? 'block' : 'none';
-            document.getElementById('status').innerText = isEnrolling ? "ENROLLMENT MODE ACTIVE" : "Regular Mode Active";
+            if (isEnrolling && allUnenrolledStudents.length === 0) fetchStudentList();
         }
 
-        // --- NFC LOGIC ---
+        // 2. FETCH DYNAMIC LIST
+        async function fetchStudentList() {
+            document.getElementById('status').innerText = "Fetching roster...";
+            try {
+                const res = await fetch(`${scriptURL}?action=fetchList`);
+                allUnenrolledStudents = await res.json();
+                renderStudentList(allUnenrolledStudents);
+                document.getElementById('status').innerText = "Roster updated.";
+            } catch (e) { document.getElementById('status').innerText = "Fetch Error"; }
+        }
+
+        function renderStudentList(list) {
+            const selector = document.getElementById('studentSelector');
+            selector.innerHTML = '';
+            list.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.name;
+                opt.innerText = `${s.name} (${s.section})`;
+                selector.appendChild(opt);
+            });
+        }
+
+        function filterStudents() {
+            const term = document.getElementById('searchBar').value.toLowerCase();
+            const filtered = allUnenrolledStudents.filter(s => s.name.toLowerCase().includes(term));
+            renderStudentList(filtered);
+        }
+
+        // 3. NFC LOGIC
         async function initNFC() {
             if ('NDEFReader' in window) {
-                try {
-                    const ndef = new NDEFReader();
-                    await ndef.scan();
-                    document.getElementById('status').innerText = "📡 NFC Scanner Active...";
-                    ndef.onreading = event => {
-                        const nfcSerial = event.serialNumber;
-                        if (isEnrolling) {
-                            handleEnrollment(nfcSerial);
-                        } else {
-                            processEntry(nfcSerial);
-                        }
-                    };
-                } catch (error) {
-                    document.getElementById('status').innerText = "NFC Error: " + error;
-                }
-            } else {
-                document.getElementById('status').innerText = "NFC not supported on this browser.";
+                const ndef = new NDEFReader();
+                await ndef.scan();
+                ndef.onreading = event => {
+                    const nfcId = event.serialNumber;
+                    if (isEnrolling) { handleEnroll(nfcId); } else { processEntry(nfcId); }
+                };
             }
         }
 
-        // --- ENROLLMENT (MAPPING) LOGIC ---
-        async function handleEnrollment(nfcSerial) {
-            const studentName = document.getElementById('studentSelector').value;
-            if (!studentName) {
-                alert("Select a student name first!");
-                return;
-            }
-            document.getElementById('status').innerText = "Mapping " + studentName + "...";
+        async function handleEnroll(nfcId) {
+            const name = document.getElementById('studentSelector').value;
+            if (!name) return alert("Select a student first!");
+            document.getElementById('status').innerText = "Mapping...";
             
             try {
-                const response = await fetch(scriptURL, {
-                    method: "POST",
-                    body: JSON.stringify({ name: studentName, nfc: nfcSerial })
+                const res = await fetch(scriptURL, { method: "POST", body: JSON.stringify({ name, nfc: nfcId }) });
+                alert(await res.text());
+                fetchStudentList(); // Remove enrolled student from list
+            } catch (e) { alert("Mapping failed. Check connection."); }
+        }
+
+        function processEntry(id) {
+            let score = (currentMode === "Recitation") ? prompt(`Score for ${id}:`, "1") : "";
+            if (currentMode === "Recitation" && score === null) return;
+            logData(id, score);
+        }
+
+        // 4. OFFLINE SYNC LOGIC
+        function logData(id, score) {
+            const entry = { id, type: currentMode, score, time: new Date().toISOString() };
+            const url = `${scriptURL}?id=${encodeURIComponent(id)}&type=${encodeURIComponent(currentMode)}&score=${encodeURIComponent(score)}`;
+            
+            fetch(url, { method: "GET", mode: "no-cors" })
+                .then(() => { 
+                    document.getElementById('status').innerHTML = "✅ Online: " + id;
+                    playBeep(880, 150);
+                })
+                .catch(() => {
+                    const store = db.transaction("outbox", "readwrite").objectStore("outbox");
+                    store.add(entry);
+                    updateOfflineCount();
+                    document.getElementById('status').innerHTML = "📡 Offline: Saved Locally";
+                    playBeep(440, 200);
                 });
-                const result = await response.text();
-                alert(result);
-                playBeep(1200, 300);
-                document.getElementById('status').innerText = "Mapped Successfully!";
-            } catch (e) {
-                alert("Enrollment Failed: " + e);
-            }
         }
 
-        // --- SCANNING LOGIC ---
-        async function startBarcodeScan() {
-            const video = document.getElementById('video');
-            const container = document.getElementById('video-container');
-            container.style.display = "block";
+        async function syncOfflineData() {
+            const store = db.transaction("outbox", "readwrite").objectStore("outbox");
+            const records = await new Promise(r => { store.getAll().onsuccess = e => r(e.target.result); });
             
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                video.srcObject = stream;
-                const barcodeDetector = new BarcodeDetector();
-                const interval = setInterval(async () => {
-                    const barcodes = await barcodeDetector.detect(video);
-                    if (barcodes.length > 0) {
-                        clearInterval(interval);
-                        stream.getTracks().forEach(t => t.stop());
-                        container.style.display = "none";
-                        processEntry(barcodes[0].rawValue);
-                    }
-                }, 500);
-            } catch (e) { alert("Camera Error: " + e); }
+            if (records.length === 0) return alert("Nothing to sync.");
+            document.getElementById('status').innerText = "Syncing...";
+
+            for (const rec of records) {
+                const url = `${scriptURL}?id=${encodeURIComponent(rec.id)}&type=${encodeURIComponent(rec.type)}&score=${encodeURIComponent(rec.score)}`;
+                await fetch(url, { method: "GET", mode: "no-cors" });
+            }
+            
+            db.transaction("outbox", "readwrite").objectStore("outbox").clear();
+            updateOfflineCount();
+            alert("All data synced to Google Sheets!");
+        }
+
+        function updateOfflineCount() {
+            const store = db.transaction("outbox", "readonly").objectStore("outbox");
+            store.count().onsuccess = e => { document.getElementById('offlineCount').innerText = e.target.result; };
+        }
+
+        function playBeep(f, d) {
+            const a = new (window.AudioContext || window.webkitAudioContext)();
+            const o = a.createOscillator();
+            const g = a.createGain();
+            o.frequency.value = f;
+            o.connect(g); g.connect(a.destination);
+            g.gain.value = 0.05;
+            o.start(); o.stop(a.currentTime + d/1000);
         }
 
         function submitManual() {
@@ -182,32 +195,8 @@
             if (val) processEntry(val);
         }
 
-        function processEntry(id) {
-            let score = "";
-            if (currentMode === "Recitation") {
-                score = prompt(`Score for ${id}:`, "1");
-                if (score === null) return;
-            }
-            logToSheet(id, score);
-        }
-
-        function logToSheet(id, score) {
-            const finalURL = `${scriptURL}?id=${encodeURIComponent(id)}&type=${encodeURIComponent(currentMode)}&score=${encodeURIComponent(score)}`;
-            fetch(finalURL, { method: "GET", mode: "no-cors" })
-            .then(() => {
-                document.getElementById('status').innerHTML = `<b style="color: green;">✅ Logged!</b><br>ID: ${id}`;
-                playBeep(880, 200);
-                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                document.getElementById('manualId').value = "";
-            });
-        }
-
-        // Start NFC on first user interaction
         window.addEventListener('click', initNFC, { once: true });
-        
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js');
-        }
+        if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
     </script>
 </body>
 </html>
