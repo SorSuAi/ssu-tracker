@@ -24,11 +24,12 @@
 
     <script>
         let currentMode = "Attendance";
-        const scriptURL = "YOUR_APPS_SCRIPT_URL_HERE";
+        const scriptURL = "https://script.google.com/macros/s/AKfycbx5sZG0zIJhkB8P6LjKolCrwXXuDzfsrYWU8enK4Ln_cZS9UwcBX__PHLixbYCjnoKJ/exec";
 
         function setMode(mode) {
             currentMode = mode;
-            document.getElementById('status').innerText = "Ready to scan for " + mode;
+            document.getElementById('status').innerText = "Mode changed to: " + mode;
+            if (navigator.vibrate) navigator.vibrate(50); 
         }
 
         async function startScanning() {
@@ -36,31 +37,35 @@
                 try {
                     const ndef = new NDEFReader();
                     await ndef.scan();
-                    document.getElementById('status').innerText = "Scanning active...";
+                    document.getElementById('status').innerText = "📡 Scanner Active (Center-back of phone)";
 
                     ndef.onreading = event => {
-                        const serialNumber = event.serialNumber;
-                        logToSheet(serialNumber);
+                        // event.serialNumber is a unique ID for every NFC card
+                        const id = event.serialNumber;
+                        logToSheet(id);
                     };
                 } catch (error) {
-                    alert("Error: " + error);
+                    document.getElementById('status').innerText = "Error: " + error;
                 }
             } else {
-                alert("Web NFC is not supported on this browser/device.");
+                alert("Web NFC not supported. Use Chrome on Android.");
             }
         }
 
         function logToSheet(id) {
             fetch(`${scriptURL}?id=${id}&type=${currentMode}`)
                 .then(() => {
-                    document.getElementById('status').innerText = `Logged ${currentMode} for ID: ${id}`;
-                    // Optional: Add haptic feedback
-                    if (navigator.vibrate) navigator.vibrate(200);
-                });
+                    document.getElementById('status').innerHTML = 
+                        `<b style="color: green;">Logged ${currentMode}</b><br>ID: ${id}`;
+                    if (navigator.vibrate) navigator.vibrate([100, 50, 100]); // Success vibration
+                })
+                .catch(err => alert("Sheet Error: " + err));
         }
 
-        // Start scanning as soon as the page is interacted with
-        window.addEventListener('click', startScanning, { once: true });
+        // Initialize on first click
+        document.body.addEventListener('click', () => {
+            startScanning();
+        }, { once: true });
     </script>
 </body>
 </html>
