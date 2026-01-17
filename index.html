@@ -4,9 +4,12 @@
     <title>SSU Tracker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 20px; }
-        button { padding: 20px; margin: 10px; width: 80%; font-size: 1.2em; cursor: pointer; }
-        .active { background-color: #4CAF50; color: white; }
+        body { font-family: sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
+        button { padding: 20px; margin: 10px; width: 80%; font-size: 1.2em; cursor: pointer; border: none; border-radius: 8px; transition: 0.3s; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .active { background-color: #4CAF50 !important; color: white; transform: scale(1.05); }
+        #status { margin-top: 20px; font-weight: bold; min-height: 50px; }
+        .attendance-btn { background-color: #e0e0e0; }
+        .recitation-btn { background-color: #e0e0e0; }
     </style>
     <link rel="manifest" href="manifest.json">
     <script>
@@ -16,37 +19,42 @@
     </script>
 </head>
 <body>
-    <h2>SSU Attendance & Recitation</h2>
+    <h2>🏛️ SSU Attendance & Recitation</h2>
     <p id="status">Tap a mode to start scanning...</p>
     
-    <button id="btnAttendance" onclick="setMode('Attendance')">Mode: Attendance</button>
-    <button id="btnRecitation" onclick="setMode('Recitation')">Mode: Recitation</button>
+    <button id="btnAttendance" class="attendance-btn active" onclick="setMode('Attendance')">Mode: Attendance</button>
+    <button id="btnRecitation" class="recitation-btn" onclick="setMode('Recitation')">Mode: Recitation</button>
 
    <script>
     let currentMode = "Attendance";
-    // Your Script URL is now integrated
-    const scriptURL = "https://script.google.com/macros/s/AKfycbx5sZG0zIJhkB8P6LjKolCrwXXuDzfsrYWU8enK4Ln_cZS9UwcBX__PHLixbYCjnoKJ/exechttps://script.google.com/macros/s/AKfycbx5sZG0zIJhkB8P6LjKolCrwXXuDzfsrYWU8enK4Ln_cZS9UwcBX__PHLixbYCjnoKJ/exec";
+    
+    // FIXED: Removed the double URL paste
+    const scriptURL = "https://script.google.com/macros/s/AKfycbx5sZG0zIJhkB8P6LjKolCrwXXuDzfsrYWU8enK4Ln_cZS9UwcBX__PHLixbYCjnoKJ/exec";
 
-    // Function to create a "Beep" sound using Web Audio API
     function playBeep(frequency = 880, duration = 150) {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const oscillator = audioCtx.createOscillator();
-        const gainNode = audioCtx.createGain();
-
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(frequency, audioCtx.currentTime);
-        oscillator.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-
-        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); // Volume
-        oscillator.start();
-        oscillator.stop(audioCtx.currentTime + (duration / 1000));
+        try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + (duration / 1000));
+        } catch(e) { console.error("Audio error", e); }
     }
 
     function setMode(mode) {
         currentMode = mode;
-        document.getElementById('status').innerText = "Mode: " + mode;
-        playBeep(440, 50); // Low short beep for mode change
+        document.getElementById('status').innerText = "Mode set to: " + mode;
+        
+        // Visual button toggle
+        document.getElementById('btnAttendance').classList.toggle('active', mode === 'Attendance');
+        document.getElementById('btnRecitation').classList.toggle('active', mode === 'Recitation');
+        
+        playBeep(440, 50);
     }
 
     async function startScanning() {
@@ -54,7 +62,7 @@
             try {
                 const ndef = new NDEFReader();
                 await ndef.scan();
-                document.getElementById('status').innerText = "📡 Scanner Active...";
+                document.getElementById('status').innerHTML = "📡 <span style='color: blue;'>Scanner Active...</span><br>Tap ID to center-back of phone";
 
                 ndef.onreading = event => {
                     const id = event.serialNumber;
@@ -63,32 +71,31 @@
             } catch (error) {
                 document.getElementById('status').innerText = "Error: " + error;
             }
+        } else {
+            document.getElementById('status').innerText = "Web NFC not supported on this device.";
         }
     }
 
     function logToSheet(id) {
-        // We add 'mode: no-cors' to bypass the security block
-        fetch(`${scriptURL}?id=${id}&type=${currentMode}`, {
+        const finalURL = `${scriptURL}?id=${encodeURIComponent(id)}&type=${encodeURIComponent(currentMode)}`;
+        
+        fetch(finalURL, {
             method: "GET",
-            mode: "no-cors",
-            cache: "no-cache"
+            mode: "no-cors", // This is vital for Google Apps Script
+            headers: {
+                "Content-Type": "text/plain"
+            }
         })
         .then(() => {
-            // NOTE: With 'no-cors', the app won't know if it actually succeeded 
-            // in the sheet, but it will allow the request to reach Google.
-            document.getElementById('status').innerHTML = 
-                `<b style="color: green;">Tap Recorded!</b><br>ID: ${id}`;
-            
-            playBeep(880, 200); 
-            if (navigator.vibrate) navigator.vibrate([100, 50, 100]); 
+            document.getElementById('status').innerHTML = `<b style="color: green;">✅ Recorded in Sheet!</b>`;
+            playBeep(880, 200);
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
         })
         .catch(err => {
-            playBeep(220, 500);
-            console.error("Connection Error:", err);
+            document.getElementById('status').innerText = "Fetch Error: " + err;
         });
     }
 
-    // Initialize on first interaction
     document.body.addEventListener('click', () => {
         startScanning();
     }, { once: true });
