@@ -67,19 +67,25 @@
     }
 
     function logToSheet(id) {
-        fetch(`${scriptURL}?id=${id}&type=${currentMode}`)
-            .then(() => {
-                document.getElementById('status').innerHTML = 
-                    `<b style="color: green;">Success!</b><br>ID: ${id}`;
-                
-                // Sound and Vibration confirmation
-                playBeep(880, 200); // High beep for success
-                if (navigator.vibrate) navigator.vibrate([100, 50, 100]); 
-            })
-            .catch(err => {
-                playBeep(220, 500); // Low "error" buzz
-                console.error(err);
-            });
+        // We add 'mode: no-cors' to bypass the security block
+        fetch(`${scriptURL}?id=${id}&type=${currentMode}`, {
+            method: "GET",
+            mode: "no-cors",
+            cache: "no-cache"
+        })
+        .then(() => {
+            // NOTE: With 'no-cors', the app won't know if it actually succeeded 
+            // in the sheet, but it will allow the request to reach Google.
+            document.getElementById('status').innerHTML = 
+                `<b style="color: green;">Tap Recorded!</b><br>ID: ${id}`;
+            
+            playBeep(880, 200); 
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]); 
+        })
+        .catch(err => {
+            playBeep(220, 500);
+            console.error("Connection Error:", err);
+        });
     }
 
     // Initialize on first interaction
