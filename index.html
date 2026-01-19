@@ -18,6 +18,10 @@
         #status { font-weight: bold; padding: 10px; border-radius: 5px; background: #fff; display: inline-block; margin-top: 10px; }
         .enroll-box { border-top: 5px solid #ffc107; display: none; }
         #searchBar { border: 2px solid #ffc107; }
+        
+        /* Camera UI for iPhone */
+        #video-container { display: none; width: 100%; max-width: 400px; margin: 10px auto; border-radius: 12px; overflow: hidden; border: 3px solid #002147; }
+        video { width: 100%; height: auto; display: block; }
     </style>
 </head>
 <body>
@@ -28,7 +32,7 @@
         <button class="btn-sync" onclick="syncOfflineData()">
             🔄 Sync Data (<span id="offlineCount">0</span>)
         </button>
-        <div id="status">Tap anywhere to start NFC</div>
+        <div id="status">Waiting for interaction...</div>
     </div>
 
     <div class="card">
@@ -36,14 +40,26 @@
             <button id="btnAttendance" class="btn-mode active" onclick="setMode('Attendance')">Attendance</button>
             <button id="btnRecitation" class="btn-mode" onclick="setMode('Recitation')">Recitation</button>
         </div>
+        
+        <div style="margin-top: 15px; padding: 10px; background: #eee; border-radius: 8px;">
+            <label><b>Device Source:</b></label><br>
+            <input type="radio" name="source" id="sourceNFC" checked onclick="switchSource('NFC')"> NFC (Android)
+            <input type="radio" name="source" id="sourceCam" onclick="switchSource('CAM')"> Camera (iPhone)
+        </div>
+
         <div style="margin-top: 15px;">
             <input type="checkbox" id="enrollToggle" onclick="toggleEnrollmentUI()"> 
-            <label for="enrollToggle"><b>Enrollment Mode</b> (Map NFC)</label>
+            <label for="enrollToggle"><b>Enrollment Mode</b> (Map ID)</label>
         </div>
     </div>
 
+    <div id="video-container">
+        <p style="margin: 5px; font-size: 0.8em;">Scanning Barcode/QR...</p>
+        <video id="video" autoplay playsinline></video>
+    </div>
+
     <div class="card enroll-box" id="enrollmentUI">
-        <h3>Assign NFC to Student</h3>
+        <h3>Assign ID to Student</h3>
         <input type="text" id="searchBar" placeholder="🔍 Search student name..." onkeyup="filterStudents()">
         <select id="studentSelector" size="5" style="height: 150px;">
             <option value="">-- Start searching or refresh --</option>
@@ -61,6 +77,7 @@
         let currentMode = "Attendance";
         let isEnrolling = false;
         let allUnenrolledStudents = [];
+        let scannerActive = false;
 
         // 1. DATABASE (IndexedDB)
         const dbReq = indexedDB.open("SSU_Tracker_DB", 1);
@@ -75,13 +92,67 @@
             playBeep(440, 50);
         }
 
+        function switchSource(type) {
+            if (type === 'CAM') {
+                document.getElementById('video-container').style.display = 'block';
+                document.getElementById('status').innerText = "Camera Mode Active";
+                startCamera();
+            } else {
+                document.getElementById('video-container').style.display = 'none';
+                document.getElementById('status').innerText = "NFC Mode Active (Android)";
+                stopCamera();
+                initNFC();
+            }
+        }
+
         function toggleEnrollmentUI() {
             isEnrolling = document.getElementById('enrollToggle').checked;
             document.getElementById('enrollmentUI').style.display = isEnrolling ? 'block' : 'none';
             if (isEnrolling && allUnenrolledStudents.length === 0) fetchStudentList();
         }
 
-        // 2. FETCH DYNAMIC LIST
+        // 2. CAMERA LOGIC (For iPhone Barcodes)
+        async function startCamera() {
+            const video = document.getElementById('video');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                video.srcObject = stream;
+                // Barcode Detection API (Works in iOS 17+)
+                if ('BarcodeDetector' in window) {
+                    const detector = new BarcodeDetector();
+                    const scan = async () => {
+                        if (document.getElementById('sourceCam').checked) {
+                            try {
+                                const barcodes = await detector.detect(video);
+                                if (barcodes.length > 0) {
+                                    const id = barcodes[0].rawValue;
+                                    playBeep(880, 150);
+                                    if (isEnrolling) { handleEnroll(id); } else { processEntry(id); }
+                                    // Cool-off period so it doesn't scan the same ID 100 times
+                                    setTimeout(() => { requestAnimationFrame(scan); }, 2000);
+                                    return;
+                                }
+                            } catch (e) {}
+                            requestAnimationFrame(scan);
+                        }
+                    };
+                    scan();
+                } else {
+                    document.getElementById('status').innerText = "Browser doesn't support Barcode API";
+                }
+            } catch (err) {
+                document.getElementById('status').innerText = "Camera access denied.";
+            }
+        }
+
+        function stopCamera() {
+            const video = document.getElementById('video');
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        // --- Rest of your original logic (Fetch, Filter, NFC, Sync) remains the same ---
         async function fetchStudentList() {
             document.getElementById('status').innerText = "Fetching roster...";
             try {
@@ -109,28 +180,28 @@
             renderStudentList(filtered);
         }
 
-        // 3. NFC LOGIC
         async function initNFC() {
             if ('NDEFReader' in window) {
                 const ndef = new NDEFReader();
-                await ndef.scan();
-                ndef.onreading = event => {
-                    const nfcId = event.serialNumber;
-                    if (isEnrolling) { handleEnroll(nfcId); } else { processEntry(nfcId); }
-                };
+                try {
+                    await ndef.scan();
+                    ndef.onreading = event => {
+                        const nfcId = event.serialNumber;
+                        if (isEnrolling) { handleEnroll(nfcId); } else { processEntry(nfcId); }
+                    };
+                } catch(e) { document.getElementById('status').innerText = "NFC error or denied."; }
             }
         }
 
-        async function handleEnroll(nfcId) {
+        async function handleEnroll(id) {
             const name = document.getElementById('studentSelector').value;
             if (!name) return alert("Select a student first!");
-            document.getElementById('status').innerText = "Mapping...";
-            
+            document.getElementById('status').innerText = "Mapping " + id + "...";
             try {
-                const res = await fetch(scriptURL, { method: "POST", body: JSON.stringify({ name, nfc: nfcId }) });
+                const res = await fetch(scriptURL, { method: "POST", body: JSON.stringify({ name, nfc: id }) });
                 alert(await res.text());
-                fetchStudentList(); // Remove enrolled student from list
-            } catch (e) { alert("Mapping failed. Check connection."); }
+                fetchStudentList(); 
+            } catch (e) { alert("Mapping failed."); }
         }
 
         function processEntry(id) {
@@ -139,11 +210,9 @@
             logData(id, score);
         }
 
-        // 4. OFFLINE SYNC LOGIC
         function logData(id, score) {
             const entry = { id, type: currentMode, score, time: new Date().toISOString() };
             const url = `${scriptURL}?id=${encodeURIComponent(id)}&type=${encodeURIComponent(currentMode)}&score=${encodeURIComponent(score)}`;
-            
             fetch(url, { method: "GET", mode: "no-cors" })
                 .then(() => { 
                     document.getElementById('status').innerHTML = "✅ Online: " + id;
@@ -161,18 +230,15 @@
         async function syncOfflineData() {
             const store = db.transaction("outbox", "readwrite").objectStore("outbox");
             const records = await new Promise(r => { store.getAll().onsuccess = e => r(e.target.result); });
-            
             if (records.length === 0) return alert("Nothing to sync.");
             document.getElementById('status').innerText = "Syncing...";
-
             for (const rec of records) {
                 const url = `${scriptURL}?id=${encodeURIComponent(rec.id)}&type=${encodeURIComponent(rec.type)}&score=${encodeURIComponent(rec.score)}`;
                 await fetch(url, { method: "GET", mode: "no-cors" });
             }
-            
             db.transaction("outbox", "readwrite").objectStore("outbox").clear();
             updateOfflineCount();
-            alert("All data synced to Google Sheets!");
+            alert("All data synced!");
         }
 
         function updateOfflineCount() {
@@ -195,8 +261,9 @@
             if (val) processEntry(val);
         }
 
-        window.addEventListener('click', initNFC, { once: true });
-        if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+        window.addEventListener('click', () => {
+            if (document.getElementById('sourceNFC').checked) initNFC();
+        }, { once: true });
     </script>
 </body>
 </html>
