@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SSU Tracker Pro</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          screens: {
+            'sphone':    {'max': '479px'},          // extra small phones
+            'phone':     {'min': '480px', 'max': '699px'},  // small phones
+            'tablet':    {'min': '700px', 'max': '1099px'}, // tablets
+            'laptop':    {'min': '1100px', 'max': '1399px'}, // laptops
+            'desktop':   {'min': '1400px'},
+            'landscape': {'raw': '(orientation: landscape)'},
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-100  font-sans p-4">
+
+ <div class="flex items-center gap-2">
+ <img class="w-16" src="./Assets/sorsu.png" alt="">
+ <span class=" text-2xl font-bold text-red-800">SSU Tracker Pro</span> 
+</div>
+<!-- STATUS & SYNC -->
+<div class="bg-white p-4 rounded-xl mt-5 shadow mb-4 border-t-4 border-red-900 text-center"> 
+    <button onclick="syncOfflineData()" class="bg-green-600 text-white px-6 py-3 rounded-lg font-bold mb-2">🔄 Sync Data (<span id="offlineCount">0</span>)</button>
+    <div id="status" class="mt-2 font-semibold">Waiting for interaction...</div>
+</div>
+
+<!-- MODE TOGGLE & DEVICE SOURCE -->
+<div class="bg-white border-t-4 border-red-900 p-4 rounded-xl shadow mb-4">
+    <div class="flex gap-2 mb-4">
+        <button id="btnAttendance" onclick="setMode('Attendance')" class="w-1/2 bg-red-900 text-white font-bold py-3 rounded-l-lg">Attendance</button>
+        <button id="btnRecitation" onclick="setMode('Recitation')" class="w-1/2 bg-gray-300 font-bold py-3 rounded-r-lg">Recitation</button>
+    </div>
+    <div class="flex justify-around mb-4 bg-gray-200 p-3 rounded-lg">
+        <label><input type="radio" name="source" id="sourceNFC" checked onclick="switchSource('NFC')"> NFC (Android)</label>
+        <label><input type="radio" name="source" id="sourceCam" onclick="switchSource('CAM')"> Camera (iPhone)</label>
+    </div>
+    <div class="mb-2">
+        <label><input type="checkbox" id="enrollToggle" onclick="toggleEnrollmentUI()"> Enrollment Mode (Map ID)</label>
+    </div>
+</div>
+
+<!-- CAMERA CONTAINER -->
+<div id="video-container" class="hidden absolute bottom-0 w-56 max-w-md mx-auto mb-4 border-4 border-[#002147] rounded-lg overflow-hidden">
+    <video id="video" autoplay playsinline class="w-full"></video>
+    <p class="text-center text-sm p-2 bg-gray-200">Scanning Barcode/QR...</p>
+</div>
+
+<!-- ENROLLMENT UI -->
+<div id="enrollmentUI" class="bg-white p-4 rounded-xl shadow mb-4 hidden border-t-4 border-yellow-400">
+    <h3 class="text-lg font-bold mb-2">Assign ID to Student</h3>
+    <input type="text" id="searchBar" placeholder="🔍 Search student name..." onkeyup="filterStudents()" class="w-full p-2 mb-2 border border-gray-300 rounded-lg">
+    <select id="studentSelector" size="5" class="w-full h-36 mb-2 border border-gray-300 rounded-lg">
+        <option value="">-- Start searching or refresh --</option>
+    </select>
+    <button onclick="fetchStudentList()" class="w-full bg-gray-600 text-white p-2 rounded-lg font-bold">🔄 Refresh List</button>
+</div>
+
+<!-- MANUAL ENTRY -->
+ <div class="flex sphone:flex-col phone:flex-col tablet:flex-col  duration-200 gap-2"> 
+<div class="bg-white w-[70rem] max-w-full p-4 rounded-xl shadow ">
+    <input type="text" id="manualId" placeholder="Manual Student ID / Name" class="w-full p-2 mb-2 border border-gray-300 rounded-lg">
+    <button onclick="submitManual()" class="w-full bg-red-900 text-white p-2 rounded-lg font-bold">Log Entry</button>
+</div>
+
+<!-- LIVE LOG -->
+<div id="logContainer" class="bg-white w-full flex-grow p-4 rounded-xl shadow max-h-64 overflow-y-auto">
+    <h3 class="font-semibold text-lg mb-2">Recent Entries</h3>
+    <ul id="logList" class="space-y-1 text-left text-sm"></ul>
+</div>
+</div>
+<!-- SCORE MODAL -->
+<div id="scoreModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
+    <div class="bg-white p-6 rounded-xl shadow-lg w-80">
+        <h3 class="text-lg font-bold mb-2">Enter Score</h3>
+        <input type="number" id="scoreInput" class="w-full p-2 mb-4 border border-gray-300 rounded-lg" value="1">
+        <div class="flex justify-between">
+            <button id="submitScore" class="bg-red-900 text-white px-4 py-2 rounded-lg font-bold">Submit</button>
+            <button id="cancelScore" class="bg-gray-500 text-white px-4 py-2 rounded-lg font-bold">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const scriptURL = "https://script.google.com/macros/s/AKfycbx5sZG0zIJhkB8P6LjKolCrwXXuDzfsrYWU8enK4Ln_cZS9UwcBX__PHLixbYCjnoKJ/exec";
+let currentMode = "Attendance";
+let isEnrolling = false;
+let allUnenrolledStudents = [];
+let db;
+
+const dbReq = indexedDB.open("SSU_Tracker_DB",1);
+dbReq.onupgradeneeded = e => e.target.result.createObjectStore("outbox",{autoIncrement:true});
+dbReq.onsuccess = e => { db = e.target.result; updateOfflineCount(); }
+
+function setMode(mode){
+    currentMode = mode;
+    document.getElementById('btnAttendance').className = mode==='Attendance' ? 'w-1/2 bg-red-900 text-white font-bold py-3 rounded-l-lg' : 'w-1/2 bg-r font-bold py-3 rounded-l-lg';
+    document.getElementById('btnRecitation').className = mode==='Recitation' ? 'w-1/2 bg-red-900 text-white font-bold py-3 rounded-r-lg' : 'w-1/2 bg-red-0 font-bold py-3 rounded-r-lg';
+    playBeep(440,50);
+}
+
+function switchSource(type){
+    if(type==='CAM'){
+        document.getElementById('video-container').classList.remove('hidden');
+        document.getElementById('status').innerText="Camera Mode Active";
+        startCamera();
+    }else{
+        document.getElementById('video-container').classList.add('hidden');
+        document.getElementById('status').innerText="NFC Mode Active (Android)";
+        stopCamera();
+        initNFC();
+    }
+}
+
+function toggleEnrollmentUI(){
+    isEnrolling=document.getElementById('enrollToggle').checked;
+    document.getElementById('enrollmentUI').classList.toggle('hidden', !isEnrolling);
+    if(isEnrolling && allUnenrolledStudents.length===0) fetchStudentList();
+}
+
+async function fetchStudentList(){
+    document.getElementById('status').innerText="Fetching roster...";
+    try{
+        const res=await fetch(`${scriptURL}?action=fetchList`);
+        allUnenrolledStudents=await res.json();
+        renderStudentList(allUnenrolledStudents);
+        document.getElementById('status').innerText="Roster updated.";
+    }catch(e){document.getElementById('status').innerText="Fetch Error";}
+}
+
+function renderStudentList(list){
+    const selector=document.getElementById('studentSelector');
+    selector.innerHTML='';
+    list.forEach(s=>{
+        const opt=document.createElement('option');
+        opt.value=s.name;
+        opt.innerText=`${s.name} (${s.section})`;
+        selector.appendChild(opt);
+    });
+}
+
+function filterStudents(){
+    const term=document.getElementById('searchBar').value.toLowerCase();
+    renderStudentList(allUnenrolledStudents.filter(s=>s.name.toLowerCase().includes(term)));
+}
+
+async function initNFC(){
+    if('NDEFReader' in window){
+        const ndef=new NDEFReader();
+        try{
+            await ndef.scan();
+            ndef.onreading=event=>{
+                const nfcId=event.serialNumber;
+                isEnrolling?handleEnroll(nfcId):processEntry(nfcId);
+            }
+        }catch(e){document.getElementById('status').innerText="NFC error or denied.";}
+    }
+}
+
+async function handleEnroll(id){
+    const name=document.getElementById('studentSelector').value;
+    if(!name) return alert("Select a student first!");
+    document.getElementById('status').innerText="Mapping "+id+"...";
+    try{
+        const res=await fetch(scriptURL,{method:"POST",body:JSON.stringify({name,nfc:id})});
+        alert(await res.text());
+        fetchStudentList();
+    }catch(e){alert("Mapping failed.");}
+}
+
+function processEntry(id){
+    if(currentMode==="Recitation"){
+        const modal=document.getElementById("scoreModal");
+        const input=document.getElementById("scoreInput");
+        modal.classList.remove("hidden");
+        input.value="1";
+        input.focus();
+
+        const submitBtn=document.getElementById("submitScore");
+        const cancelBtn=document.getElementById("cancelScore");
+
+        function closeModal(){
+            modal.classList.add("hidden");
+            submitBtn.removeEventListener("click",submitHandler);
+            cancelBtn.removeEventListener("click",cancelHandler);
+        }
+
+        function submitHandler(){
+            const score=input.value;
+            if(score==="") return alert("Please enter a score.");
+            logData(id,score);
+            closeModal();
+        }
+
+        function cancelHandler(){ closeModal(); }
+
+        submitBtn.addEventListener("click",submitHandler);
+        cancelBtn.addEventListener("click",cancelHandler);
+
+    } else logData(id,"");
+}
+
+function logData(id,score){
+    const entry={id,type:currentMode,score,time:new Date().toLocaleTimeString()};
+
+    // LIVE LOG
+    const logList=document.getElementById("logList");
+    if(logList){
+        const li=document.createElement("li");
+        li.className="p-2 bg-gray-100 rounded";
+        li.textContent=`[${entry.time}] ${entry.type}: ${entry.id}${score!==""?" (Score: "+score+")":""}`;
+        logList.prepend(li);
+    }
+
+    const url=`${scriptURL}?id=${encodeURIComponent(id)}&type=${encodeURIComponent(currentMode)}&score=${encodeURIComponent(score)}`;
+    fetch(url,{method:"GET",mode:"no-cors"})
+        .then(()=>{document.getElementById('status').innerHTML="✅ Online: "+id; playBeep(880,150);})
+        .catch(()=>{
+            const store=db.transaction("outbox","readwrite").objectStore("outbox");
+            store.add(entry);
+            updateOfflineCount();
+            document.getElementById('status').innerHTML="📡 Offline: Saved Locally";
+            playBeep(440,200);
+        });
+}
+
+function submitManual(){ 
+    const val=document.getElementById('manualId').value;
+    if(val) processEntry(val);
+}
+
+async function syncOfflineData(){
+    const store=db.transaction("outbox","readwrite").objectStore("outbox");
+    const records=await new Promise(r=>store.getAll().onsuccess=e=>r(e.target.result));
+    if(records.length===0) return alert("Nothing to sync.");
+    document.getElementById('status').innerText="Syncing...";
+    for(const rec of records){
+        const url=`${scriptURL}?id=${encodeURIComponent(rec.id)}&type=${encodeURIComponent(rec.type)}&score=${encodeURIComponent(rec.score)}`;
+        await fetch(url,{method:"GET",mode:"no-cors"});
+    }
+    db.transaction("outbox","readwrite").objectStore("outbox").clear();
+    updateOfflineCount();
+    alert("All data synced!");
+}
+
+function updateOfflineCount(){
+    const store=db.transaction("outbox","readonly").objectStore("outbox");
+    store.count().onsuccess=e=>document.getElementById('offlineCount').innerText=e.target.result;
+}
+
+function playBeep(f,d){
+    const a=new (window.AudioContext||window.webkitAudioContext)();
+    const o=a.createOscillator();
+    const g=a.createGain();
+    o.frequency.value=f;
+    o.connect(g); g.connect(a.destination);
+    g.gain.value=0.05;
+    o.start(); o.stop(a.currentTime+d/1000);
+}
+
+async function startCamera(){
+    const video=document.getElementById('video');
+    try{
+        const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+        video.srcObject=stream;
+        if('BarcodeDetector' in window){
+            const detector=new BarcodeDetector();
+            const scan=async ()=>{
+                if(document.getElementById('sourceCam').checked){
+                    try{
+                        const barcodes=await detector.detect(video);
+                        if(barcodes.length>0){
+                            const id=barcodes[0].rawValue;
+                            playBeep(880,150);
+                            isEnrolling?handleEnroll(id):processEntry(id);
+                            setTimeout(()=>requestAnimationFrame(scan),2000);
+                            return;
+                        }
+                    }catch(e){}
+                    requestAnimationFrame(scan);
+                }
+            };
+            scan();
+        }else document.getElementById('status').innerText="Browser doesn't support Barcode API";
+    }catch(err){document.getElementById('status').innerText="Camera access denied.";}
+}
+
+function stopCamera(){
+    const video=document.getElementById('video');
+    if(video.srcObject) video.srcObject.getTracks().forEach(track=>track.stop());
+}
+
+window.addEventListener('click',()=>{if(document.getElementById('sourceNFC').checked)initNFC();},{once:true});
+
+
+</script>
+
+</body>
+</html>
